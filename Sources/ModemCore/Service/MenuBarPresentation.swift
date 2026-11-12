@@ -64,7 +64,12 @@ public struct MenuBarPresentation: Equatable, Sendable {
             } else {
                 active = true
                 bars = status.signal?.bars ?? 0
-                label = network?.generation.displayName ?? "…"
+                // Registered, but the access technology is unknown: bars only, not "No service".
+                label = switch network?.generation {
+                case nil: "…"
+                case .none?: ""
+                case let generation?: generation.displayName
+                }
                 detail = [network?.operatorName, network?.band].compactMap { $0 }.joined(separator: " · ")
             }
         }

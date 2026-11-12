@@ -103,7 +103,7 @@ import Testing
 @Test func resyncsAfterTimeout() throws {
     let (channel, transport) = makeChannel([
         "AT+CSQ": [],
-        "AT": ["\r\nOK\r\n"],
+        "AT+CMEE?": ["\r\n+CMEE: 1\r\n\r\nOK\r\n"],
         "AT+QTEMP": ["\r\n+QTEMP: 50,45,45\r\n\r\nOK\r\n"],
     ])
     #expect(throws: ATError.timeout(command: "AT+CSQ")) { try channel.execute("AT+CSQ", timeout: 0.05) }
@@ -112,7 +112,40 @@ import Testing
     let response = try channel.execute("AT+QTEMP")
     #expect(response.isOK)
     #expect(response.lines == ["+QTEMP: 50,45,45"])
-    #expect(transport.written.suffix(2) == ["AT", "AT+QTEMP"])
+    #expect(transport.written.suffix(2) == ["AT+CMEE?", "AT+QTEMP"])
+}
+
+@Test func resyncIsNotFooledByALateOK() throws {
+    let (channel, transport) = makeChannel([
+        "AT+QENG=\"servingcell\"": [],
+        "AT+CSQ": ["\r\n+CSQ: 23,99\r\n\r\nOK\r\n"],
+        "AT+QTEMP": ["\r\n+QTEMP: 50,45,45\r\n\r\nOK\r\n"],
+    ])
+    #expect(throws: ATError.timeout(command: "AT+QENG=\"servingcell\"")) {
+        try channel.execute("AT+QENG=\"servingcell\"", timeout: 0.05)
+    }
+    // The late reply of AT+QENG arrives first, the probe's own reply only after it.
+    transport.inject("\r\n+QENG: \"servingcell\",\"NOCONN\"\r\n\r\nOK\r\n")
+    transport.replies["AT+CMEE?"] = ["\r\n+CMEE: 1\r\n", "\r\nOK\r\n"]
+    #expect(try channel.execute("AT+CSQ").lines == ["+CSQ: 23,99"])
+    #expect(try channel.execute("AT+QTEMP").lines == ["+QTEMP: 50,45,45"])
+}
+
+@Test func failedResyncSkipsTheCommand() {
+    let (channel, transport) = makeChannel(["AT+CSQ": [], "AT+CMEE?": []])
+    #expect(throws: ATError.timeout(command: "AT+CSQ")) { try channel.execute("AT+CSQ", timeout: 0.05) }
+    #expect(throws: ATError.timeout(command: "AT+QTEMP")) { try channel.execute("AT+QTEMP") }
+    #expect(!transport.written.contains("AT+QTEMP"))
+}
+
+@Test func suspendedChannelReportsBusyUntilResumed() throws {
+    let (channel, transport) = makeChannel(["AT+CSQ": ["\r\n+CSQ: 9,99\r\n\r\nOK\r\n"]])
+    try channel.open()
+    channel.suspend()
+    #expect(throws: ATError.busy) { try channel.execute("AT+CSQ") }
+    channel.resume()
+    #expect(try channel.execute("AT+CSQ").isOK)
+    #expect(transport.isOpen)
 }
 
 @Test func openFailuresAreClassified() {

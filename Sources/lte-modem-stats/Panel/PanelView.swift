@@ -75,7 +75,7 @@ struct PanelView: View {
         case .connected:
             [
                 service.status.network?.operatorName,
-                service.status.network?.generation.displayName,
+                service.status.network.flatMap { $0.generation == .none ? nil : $0.generation.displayName },
                 service.status.network.map { Labels.registration($0.registration) },
                 service.status.network?.radioState.map(Labels.radioState),
             ].compactMap { $0 }.joined(separator: " · ")
@@ -100,7 +100,7 @@ struct PanelView: View {
                 .joined(separator: " / ").nilIfEmpty)
             InfoRow(L10n.t("数据", "Data"), data.map { data in
                 data.connected ? [data.apn, data.ipv4].compactMap { $0 }.joined(separator: " · ") : L10n.t("未连接", "Disconnected")
-            }, copyable: data?.ipv4 != nil)
+            }, copyValue: data?.connected == true ? data?.ipv4 : nil)
             InfoRow("IPv6", data?.ipv6, copyable: true)
         }
     }

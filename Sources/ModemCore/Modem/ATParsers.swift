@@ -50,9 +50,10 @@ public enum ATParsers {
         bareValue(lines).flatMap { $0.allSatisfy(\.isNumber) && $0.count >= 14 ? $0 : nil }
     }
 
-    /// `+QTEMP: 51,46,46` → 51 (hottest sensor).
+    /// `+QTEMP: 51,46,46` → 51 (hottest sensor). Newer firmware sends one
+    /// `+QTEMP: "<sensor>","<value>"` line per sensor; the hottest of all lines counts.
     public static func temperature(_ lines: [String]) -> Int? {
-        fields(lines, prefix: "+QTEMP")?.compactMap { Int($0) }.max()
+        allFields(lines, prefix: "+QTEMP").joined().compactMap { Int($0) }.max()
     }
 
     // MARK: - SIM

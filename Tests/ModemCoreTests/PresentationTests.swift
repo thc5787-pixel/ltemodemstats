@@ -51,6 +51,15 @@ private func connectedStatus(rsrp: Int = -83, sim: SIMInfo.State = .ready,
         }
     }
 
+    @Test func registeredWithoutKnownGenerationIsNotNoService() {
+        var status = connectedStatus()
+        status.network?.generation = .none
+        let presentation = MenuBarPresentation(connection: .connected, status: status,
+                                               rates: nil, showRates: true, quotaFraction: nil)
+        #expect(presentation.active)
+        #expect(presentation.label == "")
+    }
+
     @Test func busyStillShowsTraffic() {
         let presentation = MenuBarPresentation(connection: .busy, status: ModemStatus(),
                                                rates: (2048, 0), showRates: true, quotaFraction: nil)

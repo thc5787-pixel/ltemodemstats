@@ -30,12 +30,19 @@ public struct ModemReader: Sendable {
     @discardableResult
     public func refresh(_ groups: Set<Group>, into status: inout ModemStatus) throws -> Set<Group> {
         var timedOut = Set<Group>()
-        for group in Group.allCases where groups.contains(group) {
+        let ordered = Group.allCases.filter(groups.contains)
+        for (index, group) in ordered.enumerated() {
             do {
                 try read(group, into: &status)
             } catch ATError.timeout {
                 // One slow command must not discard the groups that did answer.
                 timedOut.insert(group)
+                // But if the modem doesn't answer at all, each remaining group would wait out
+                // its own timeout too: skip them this round.
+                if try !channel.resync() {
+                    timedOut.formUnion(ordered[(index + 1)...])
+                    break
+                }
             }
         }
         return timedOut
@@ -46,6 +53,19 @@ public struct ModemReader: Sendable {
         var status = ModemStatus()
         let timedOut = try refresh(Set(Group.allCases), into: &status)
         return (status, timedOut)
+    }
+
+    /// Drops the values `group` reads. Device identity doesn't go stale and is kept.
+    public static func clear(_ group: Group, in status: inout ModemStatus) {
+        switch group {
+        case .device: break
+        case .sim: status.sim = nil
+        case .radio:
+            status.network = nil
+            status.signal = nil
+        case .data: status.data = nil
+        case .temperature: status.temperature = nil
+        }
     }
 
     private func read(_ group: Group, into status: inout ModemStatus) throws {
@@ -85,7 +105,7 @@ public struct ModemReader: Sendable {
     }
 
     func readRadio() throws -> (NetworkInfo, SignalInfo) {
-        let (operatorName, generation) = try query("AT+COPS?").map(ATParsers.operatorInfo) ?? (nil, .none)
+        var (operatorName, generation) = try query("AT+COPS?").map(ATParsers.operatorInfo) ?? (nil, .none)
         var registration = try query("AT+CEREG?").map { ATParsers.registration($0) } ?? .unknown
         if !registration.isRegistered, generation != .lte {
             // 2G/3G registration only matters when not on LTE.
@@ -93,6 +113,10 @@ public struct ModemReader: Sendable {
             if legacy.isRegistered { registration = legacy }
         }
         let mode = try query("AT+QNWINFO").flatMap(ATParsers.networkMode)
+        // `+COPS` may omit <AcT>; the access mode says the same.
+        if generation == .none, let mode {
+            generation = RadioGeneration(networkMode: mode.mode)
+        }
         let cell = try query("AT+QENG=\"servingcell\"").flatMap(ATParsers.servingCell)
         let rssi = try query("AT+CSQ").flatMap(ATParsers.rssi)
 

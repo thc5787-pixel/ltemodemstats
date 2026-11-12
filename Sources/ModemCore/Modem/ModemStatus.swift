@@ -66,6 +66,20 @@ public enum RadioGeneration: String, Codable, Sendable {
         default: self = .none
         }
     }
+
+    /// `<act>` of `+QNWINFO`: `"FDD LTE"`, `"WCDMA"`, `"GSM"`, `"HSPA+"`, …
+    init(networkMode: String) {
+        let mode = networkMode.uppercased()
+        if mode.contains("LTE") {
+            self = .lte
+        } else if ["WCDMA", "HSDPA", "HSUPA", "HSPA", "TDSCDMA", "TD-SCDMA", "UMTS", "EVDO", "HDR"].contains(where: mode.contains) {
+            self = .umts
+        } else if ["GSM", "GPRS", "EDGE", "CDMA"].contains(where: mode.contains) {
+            self = .gsm
+        } else {
+            self = .none
+        }
+    }
 }
 
 public struct NetworkInfo: Codable, Equatable, Sendable {

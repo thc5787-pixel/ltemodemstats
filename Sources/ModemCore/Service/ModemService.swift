@@ -32,6 +32,8 @@ public final class ModemService {
     /// Per-second rates over the last `rateWindow` seconds.
     public private(set) var rateHistory: [RateSample] = []
     public private(set) var lastUpdate: Date?
+    /// Traffic of the current billing cycle; updated every tick.
+    public private(set) var cycleTotals = TrafficTotals()
     public let settings: AppSettings
 
     public static let rateWindow: TimeInterval = 300
@@ -50,6 +52,13 @@ public final class ModemService {
     private var deviceRetryAt: Date?
     private var unsavedTraffic = false
     private var timer: Timer?
+    /// Rounds in a row each group timed out; its values are dropped once they are this stale.
+    private var groupTimeouts: [ModemReader.Group: Int] = [:]
+    private static let staleAfterTimeouts = 2
+    /// Sum of the billing cycle without today, so the per-second update only adds today.
+    @ObservationIgnored private var cycleBase: (startDay: Int, today: String, totals: TrafficTotals)?
+    @ObservationIgnored private var handoffObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var loanEnd: Task<Void, Never>?
 
     public init(settings: AppSettings,
                 channel: ATChannel = ATChannel(),
@@ -58,13 +67,10 @@ public final class ModemService {
         self.reader = ModemReader(channel: channel)
         self.historyURL = historyURL
         self.meter = TrafficMeter(history: TrafficHistory.load(from: historyURL))
+        updateCycleTotals(at: Date())
     }
 
     // MARK: - Derived values for the UI
-
-    public var cycleTotals: TrafficTotals {
-        meter.cycle(startDay: settings.billingDay)
-    }
 
     /// Share of the monthly plan used, or nil without a plan.
     public var quotaFraction: Double? {
@@ -76,6 +82,7 @@ public final class ModemService {
 
     public func start() {
         guard timer == nil else { return }
+        observeHandoff()
         tick()
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -88,6 +95,9 @@ public final class ModemService {
     public func stop() {
         timer?.invalidate()
         timer = nil
+        handoffObservers.forEach(DistributedNotificationCenter.default().removeObserver)
+        handoffObservers = []
+        loanEnd?.cancel()
         saveHistory()
         // Also stops an in-flight poll and keeps it from reopening the interface.
         reader.channel.shutdown()
@@ -103,9 +113,43 @@ public final class ModemService {
 
     // MARK: - Polling
 
+    // MARK: - CLI handoff
+
+    private func observeHandoff() {
+        let center = DistributedNotificationCenter.default()
+        handoffObservers = [
+            center.addObserver(forName: ATHandoff.release, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.lendInterface() }
+            },
+            center.addObserver(forName: ATHandoff.done, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reclaimInterface() }
+            },
+        ]
+    }
+
+    /// The CLI wants the AT interface: release it (an in-flight poll ends as `.busy`).
+    private func lendInterface() {
+        reader.channel.suspend()
+        loanEnd?.cancel()
+        loanEnd = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(ATHandoff.maxLoan))
+            guard !Task.isCancelled else { return }
+            self?.reclaimInterface()
+        }
+    }
+
+    private func reclaimInterface() {
+        loanEnd?.cancel()
+        loanEnd = nil
+        reader.channel.resume()
+        // Reconnect on the next tick instead of after the reconnect interval.
+        lastAttempt = nil
+    }
+
     private func tick() {
         let now = Date()
         sampleTraffic(at: now)
+        updateCycleTotals(at: now)
         pollModem(at: now)
         if unsavedTraffic, now.timeIntervalSince(lastSave) >= 60 {
             saveHistory()
@@ -113,7 +157,12 @@ public final class ModemService {
     }
 
     private func sampleTraffic(at now: Date) {
+        let previous = (interfaceName, interfaceIndex)
         locateInterface(at: now)
+        if previous != (interfaceName, interfaceIndex) {
+            // Another NIC: its counters are not comparable with the old one's.
+            meter.record(nil, at: now)
+        }
         let counters = interfaceName.flatMap(NetworkInterfaces.counters(for:))
         meter.record(counters, at: now)
         if meter.rxRate > 0 || meter.txRate > 0 { unsavedTraffic = true }
@@ -122,6 +171,19 @@ public final class ModemService {
             rateHistory.append(RateSample(date: now, rx: meter.rxRate, tx: meter.txRate))
         }
         rateHistory.removeAll { now.timeIntervalSince($0.date) > Self.rateWindow }
+    }
+
+    private func updateCycleTotals(at now: Date) {
+        let startDay = settings.billingDay
+        let today = meter.dayKey(now)
+        if cycleBase?.startDay != startDay || cycleBase?.today != today {
+            // Once a day or after a settings change: today is the only day that still grows.
+            let cycle = meter.cycle(startDay: startDay, containing: now)
+            let todayTotals = meter.today(now)
+            cycleBase = (startDay, today, TrafficTotals(rx: cycle.rx - todayTotals.rx, tx: cycle.tx - todayTotals.tx))
+        }
+        let totals = cycleBase!.totals + meter.today(now)
+        if totals != cycleTotals { cycleTotals = totals }
     }
 
     /// Keeps `interfaceName` pointing at the modem's NIC. A vanished name, or the same name
@@ -189,6 +251,17 @@ public final class ModemService {
                 if consecutiveTimeouts >= 3 { disconnect(.unresponsive) }
                 return
             }
+            var newStatus = newStatus
+            for group in groups {
+                guard timedOut.contains(group) else {
+                    groupTimeouts[group] = nil
+                    continue
+                }
+                let count = groupTimeouts[group, default: 0] + 1
+                groupTimeouts[group] = count
+                // Old values of a group that keeps timing out would look live next to fresh ones.
+                if count >= Self.staleAfterTimeouts { ModemReader.clear(group, in: &newStatus) }
+            }
             status = newStatus
             connection = .connected
             consecutiveTimeouts = 0
@@ -211,6 +284,7 @@ public final class ModemService {
     private func disconnect(_ reason: Connection) {
         connection = reason
         consecutiveTimeouts = 0
+        groupTimeouts = [:]
         lastRun = [:]
         deviceRetryAt = nil
         // Stale values would look live; keep nothing from the lost connection.

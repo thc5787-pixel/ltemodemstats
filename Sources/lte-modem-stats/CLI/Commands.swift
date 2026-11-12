@@ -27,19 +27,31 @@ func printError(_ message: String) {
     FileHandle.standardError.write(Data((message + "\n").utf8))
 }
 
+/// Opens the AT interface, borrowing it from the menu bar app if that holds it.
+/// The returned closure releases it (and hands it back to the app).
+func openChannel() throws -> (ATChannel, release: () -> Void) {
+    let channel = ATChannel()
+    let borrowed = try ATHandoff.open(channel)
+    return (channel, {
+        channel.close()
+        if borrowed { ATHandoff.finish() }
+    })
+}
+
 func runAT(_ commands: [String]) -> Int32 {
     guard !commands.isEmpty else {
         printError(usage())
         return 2
     }
-    let channel = ATChannel()
-    defer { channel.close() }
+    let channel: ATChannel
+    let release: () -> Void
     do {
-        try channel.open()
+        (channel, release) = try openChannel()
     } catch {
         printError(error.localizedDescription)
         return 1
     }
+    defer { release() }
 
     var status: Int32 = 0
     for command in commands {
@@ -62,9 +74,9 @@ func runAT(_ commands: [String]) -> Int32 {
 }
 
 func runStatus(json: Bool) -> Int32 {
-    let channel = ATChannel()
-    defer { channel.close() }
     do {
+        let (channel, release) = try openChannel()
+        defer { release() }
         let (status, timedOut) = try ModemReader(channel: channel).readAll()
         if !timedOut.isEmpty {
             printError(L10n.t("部分信息读取超时：", "Some reads timed out: ")

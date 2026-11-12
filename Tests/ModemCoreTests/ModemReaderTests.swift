@@ -31,7 +31,7 @@ import Testing
     let transport = MockTransport()
     transport.replies = Fixture.qdc507.mapValues { ["\r\n" + $0.joined(separator: "\r\n") + "\r\n"] }
     transport.replies["ATE0"] = ["\r\nOK\r\n"]
-    transport.replies["AT"] = ["\r\nOK\r\n"]
+    transport.replies["AT+CMEE?"] = ["\r\n+CMEE: 1\r\n\r\nOK\r\n"]
     transport.replies["AT+QENG=\"servingcell\""] = []  // never answers
     let reader = ModemReader(channel: ATChannel(transport: transport), commandTimeout: 0.1)
     var status = ModemStatus()
@@ -40,6 +40,17 @@ import Testing
     #expect(status.network == nil)
     #expect(status.temperature == 51)
     #expect(status.data?.apn == "CTNET")
+}
+
+@Test func readerStopsTheRoundWhenTheModemIsSilent() throws {
+    let transport = MockTransport()
+    transport.replies = ["ATE0": ["\r\nOK\r\n"]]  // nothing else answers
+    let reader = ModemReader(channel: ATChannel(transport: transport), commandTimeout: 0.05)
+    var status = ModemStatus()
+    let timedOut = try reader.refresh([.sim, .radio, .data, .temperature], into: &status)
+    #expect(timedOut == [.sim, .radio, .data, .temperature])
+    // One command and one probe, not a timeout per group.
+    #expect(transport.written == ["ATE0", "AT+CPIN?", "AT+CMEE?"])
 }
 
 @Test func readerSkipsSIMDetailsWithoutCard() throws {

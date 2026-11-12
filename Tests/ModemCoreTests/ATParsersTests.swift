@@ -14,6 +14,8 @@ import Testing
     #expect(ATParsers.bareValue(Fixture.lines("AT+QGMR")) == "QDC507GLEFM21_01.001.02.004")
     #expect(ATParsers.imei(Fixture.lines("AT+GSN")) == "863000000000252")
     #expect(ATParsers.temperature(Fixture.lines("AT+QTEMP")) == 51)
+    // Newer firmware: one line per sensor.
+    #expect(ATParsers.temperature(["+QTEMP: \"pmic-therm\",\"52\"", "+QTEMP: \"xo-therm\",\"40\""]) == 52)
 }
 
 @Test func parsesSIM() {
@@ -37,6 +39,25 @@ import Testing
     let none = ATParsers.operatorInfo(["+COPS: 0"])
     #expect(none.name == nil)
     #expect(none.generation == .none)
+}
+
+@Test func generationFromNetworkMode() {
+    #expect(RadioGeneration(networkMode: "FDD LTE") == .lte)
+    #expect(RadioGeneration(networkMode: "TDD LTE") == .lte)
+    #expect(RadioGeneration(networkMode: "WCDMA") == .umts)
+    #expect(RadioGeneration(networkMode: "HSPA+") == .umts)
+    #expect(RadioGeneration(networkMode: "GSM") == .gsm)
+    #expect(RadioGeneration(networkMode: "No Service") == .none)
+}
+
+@Test func readerFallsBackToNetworkModeWithoutAcT() throws {
+    let transport = MockTransport()
+    transport.replies = Fixture.qdc507.mapValues { ["\r\n" + $0.joined(separator: "\r\n") + "\r\n"] }
+    transport.replies["ATE0"] = ["\r\nOK\r\n"]
+    transport.replies["AT+COPS?"] = ["\r\n+COPS: 0,0,\"CHN-CT\"\r\n\r\nOK\r\n"]
+    var status = ModemStatus()
+    try ModemReader(channel: ATChannel(transport: transport)).refresh([.radio], into: &status)
+    #expect(status.network?.generation == .lte)
 }
 
 @Test func parsesRegistration() {

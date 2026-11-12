@@ -63,7 +63,8 @@ if [ "$RUN_TESTS" = 1 ]; then
   if [ -f "$TESTING_MACROS" ]; then
     TEST_FLAGS=(-Xswiftc -load-plugin-library -Xswiftc "$TESTING_MACROS")
   fi
-  swift_retry swift test "${TEST_FLAGS[@]}"
+  # ${a[@]+…}: bash 3.2 (macOS /bin/bash) treats an empty array as unbound under `set -u`.
+  swift_retry swift test ${TEST_FLAGS[@]+"${TEST_FLAGS[@]}"}
 fi
 
 step "Building release"

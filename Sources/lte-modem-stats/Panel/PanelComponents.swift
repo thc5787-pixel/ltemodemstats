@@ -27,13 +27,16 @@ struct PanelSection<Content: View>: View {
 struct InfoRow: View {
     let label: String
     let value: String?
-    var copyable = false
+    /// Put on the pasteboard on click; nil makes the row plain text.
+    let copyValue: String?
     @Environment(PanelState.self) private var ui
 
-    init(_ label: String, _ value: String?, copyable: Bool = false) {
+    /// `copyable` copies the displayed value; `copyValue` copies something else (e.g. only
+    /// the IP of an "APN · IP" row).
+    init(_ label: String, _ value: String?, copyable: Bool = false, copyValue: String? = nil) {
         self.label = label
         self.value = value
-        self.copyable = copyable
+        self.copyValue = copyValue ?? (copyable ? value : nil)
     }
 
     var body: some View {
@@ -41,10 +44,10 @@ struct InfoRow: View {
             Text(label)
                 .foregroundStyle(.secondary)
                 .frame(width: 92, alignment: .leading)
-            if copyable, let value {
+            if let copyValue, let value {
                 Button {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(value, forType: .string)
+                    NSPasteboard.general.setString(copyValue, forType: .string)
                     ui.copiedRow = label
                     Task {
                         try? await Task.sleep(for: .seconds(1.2))
